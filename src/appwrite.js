@@ -1,7 +1,5 @@
 import { Client, ID, InputFile, Storage, Databases } from 'node-appwrite';
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
-import { Readable } from 'stream';
+import axios from 'axios';
 
 class AppwriteService {
   constructor() {
@@ -17,46 +15,36 @@ class AppwriteService {
     this.storage = new Storage(client);
   }
 
-  async convertFlacToMp3(flacBuffer) {
-    return new Promise((resolve, reject) => {
-      ffmpeg.setFfmpegPath(ffmpegInstaller.path);
-      const inputStream = new Readable();
-      inputStream.push(flacBuffer);
-      inputStream.push(null);
-      const chunks = [];
-      ffmpeg(inputStream)
-        .inputFormat('flac')
-        .format('mp3')
-        .on('error', reject)
-        .on('end', () => resolve(Buffer.concat(chunks)))
-        .pipe()
-        .on('data', (chunk) => chunks.push(chunk));
-    });
+  async generateMusicFromPrompt(prompt) {
+    const HF_API_TOKEN = process.env.HUGGINGFACE_ACCESS_TOKEN;
+    try {
+      const response = await axios.post(
+        'https://api-inference.huggingface.co/models/facebook/musicgen-small',
+        { inputs: prompt },
+        {
+          responseType: 'arraybuffer',
+          headers: {
+            Authorization: `Bearer ${HF_API_TOKEN}`,
+            Accept: 'audio/mpeg',
+          },
+        }
+      );
+      return Buffer.from(response.data);
+    } catch (err) {
+      if (err.response) {
+        console.error('Hugging Face API error:', err.response.status, err.response.data);
+        throw new Error(
+          `Hugging Face API error: ${err.response.status} - ${JSON.stringify(err.response.data)}`
+        );
+      } else {
+        console.error('Hugging Face API request failed:', err.message);
+        throw new Error('Hugging Face API request failed: ' + err.message);
+      }
+    }
   }
 
-  async createFile(bucketId, blob) {
-    let flacBuffer;
-    if (blob instanceof Buffer) {
-      flacBuffer = blob;
-    } else if (blob instanceof Uint8Array) {
-      flacBuffer = Buffer.from(blob);
-    } else if (blob instanceof Blob) {
-      const arrayBuffer = await blob.arrayBuffer();
-      flacBuffer = Buffer.from(arrayBuffer);
-    } else if (typeof blob === 'string') {
-      flacBuffer = Buffer.from(blob);
-    } else {
-      flacBuffer = Buffer.from(blob);
-    }
-
-    console.log('FLAC buffer length:', flacBuffer.length);
-    console.log('FLAC buffer magic:', flacBuffer.slice(0, 4).toString());
-
-    if (flacBuffer.length < 4 || flacBuffer.slice(0, 4).toString() !== 'fLaC') {
-      throw new Error('Input is not a valid FLAC file.');
-    }
-
-    const mp3Buffer = await this.convertFlacToMp3(flacBuffer);
+  async createMp3FromPromptAndUpload(bucketId, prompt) {
+    const mp3Buffer = await this.generateMusicFromPrompt(prompt);
     const file = InputFile.fromBuffer(mp3Buffer, 'audio.mp3');
     return await this.storage.createFile(bucketId, ID.unique(), file);
   }
